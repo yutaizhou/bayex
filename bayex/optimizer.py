@@ -1,5 +1,5 @@
 from functools import partial
-from typing import Union, NamedTuple
+from typing import NamedTuple, Union
 
 import jax
 import jax.numpy as jnp
@@ -43,20 +43,20 @@ class Optimizer:
         Updates the optimizer state with a new observation.
     """
 
-    def __init__(self, domain, acq='EI', maximize=False):
+    def __init__(self, domain, acq="EI", maximize=False):
         self.domain = domain
         best_fn = jnp.max if maximize else jnp.min
         self.initial = -jnp.inf if maximize else jnp.inf
         self.best_fn = best_fn
         self.best_params_fn = jnp.argmax if maximize else jnp.argmin
 
-        if acq == 'EI':
+        if acq == "EI":
             self.acq = jax.jit(boacq.expected_improvement)
-        elif acq == 'PI':
+        elif acq == "PI":
             self.acq = jax.jit(boacq.probability_improvement)
-        elif acq == 'UCB':
+        elif acq == "UCB":
             self.acq = jax.jit(boacq.upper_confidence_bounds)
-        elif acq == 'LCB':
+        elif acq == "LCB":
             self.acq = jax.jit(boacq.lower_confidence_bounds)
         else:
             raise ValueError(f"Acquisition function {acq} is not implemented")
@@ -97,14 +97,18 @@ class Optimizer:
 
             # Get dytpe from the domain and create a padded array
             dtype = self.domain[key].dtype
-            values = jnp.zeros(shape=(pad_value,), dtype=dtype).at[:num_entries].set(entries)
+            values = (
+                jnp.zeros(shape=(pad_value,), dtype=dtype).at[:num_entries].set(entries)
+            )
             _params[key] = values
 
         # From the given observation, find the better one (either maxima or minima) and return the
         # initial optizer state.
         best_score = float(self.best_fn(ys[mask]))
         best_params_idx = self.best_params_fn(ys[mask])
-        best_params = jax.tree_util.tree_map(lambda x: x[mask][best_params_idx], _params)
+        best_params = jax.tree_util.tree_map(
+            lambda x: x[mask][best_params_idx], _params
+        )
 
         # Initialize the gaussian processes state
         gpparams = GPParams(
@@ -117,11 +121,19 @@ class Optimizer:
         gp_state = GPState(gpparams, momentums, scales)
 
         # Fit to the current observations
-        xs = jnp.stack([self.domain[key].transform(_params[key]) for key in _params], axis=1)
+        xs = jnp.stack(
+            [self.domain[key].transform(_params[key]) for key in _params], axis=1
+        )
         gp_state = posterior_fit(ys, xs, mask=mask, state=gp_state)
 
-        opt_state = OptimizerState(params=_params, ys=ys, best_score=best_score,
-                                   best_params=best_params, mask=mask, gp_state=gp_state)
+        opt_state = OptimizerState(
+            params=_params,
+            ys=ys,
+            best_score=best_score,
+            best_params=best_params,
+            mask=mask,
+            gp_state=gp_state,
+        )
 
         return opt_state
 
@@ -150,18 +162,29 @@ class Optimizer:
         """
         # Sample 'size' elements of each distribution.
         keys = jax.random.split(key, len(opt_state.params))
-        samples = {param: self.domain[param].sample(key, (size,))
-                   for key, param in zip(keys, opt_state.params)}
+        samples = {
+            param: self.domain[param].sample(key, (size,))
+            for key, param in zip(keys, opt_state.params)
+        }
 
-
-        xs = jnp.stack([self.domain[key].transform(opt_state.params[key])
-                        for key in opt_state.params], axis=1)
+        xs = jnp.stack(
+            [
+                self.domain[key].transform(opt_state.params[key])
+                for key in opt_state.params
+            ],
+            axis=1,
+        )
         ys = opt_state.ys
         mask = opt_state.mask
         gpparams = opt_state.gp_state.params
         keys = jax.random.split(key, len(opt_state.params))
-        xs_samples = jnp.stack([self.domain[name].sample(key, (size,))
-                                for key, name in zip(keys,opt_state.params)], axis=1)
+        xs_samples = jnp.stack(
+            [
+                self.domain[name].sample(key, (size,))
+                for key, name in zip(keys, opt_state.params)
+            ],
+            axis=1,
+        )
 
         # Use the acquisition function to find the best parameters
         zs, (means, stds) = self.acq(xs_samples, xs, ys, mask, gpparams)
@@ -175,7 +198,7 @@ class Optimizer:
         current = jnp.sum(opt_state.mask)
 
         if current == len(opt_state.mask):
-            pad_value = int(np.ceil(len(opt_state.mask)*2 / 10) * 10)
+            pad_value = int(np.ceil(len(opt_state.mask) * 2 / 10) * 10)
             diff = pad_value - len(opt_state.mask)
             mask = jnp.pad(opt_state.mask, (0, diff))
             ys = jnp.pad(opt_state.ys, (0, diff))
@@ -187,11 +210,15 @@ class Optimizer:
             ys = opt_state.ys
             params = opt_state.params
 
-        opt_state = OptimizerState(params=params, ys=ys, best_score=opt_state.best_score,
-                                   best_params=opt_state.best_params, mask=mask,
-                                   gp_state=opt_state.gp_state)
+        opt_state = OptimizerState(
+            params=params,
+            ys=ys,
+            best_score=opt_state.best_score,
+            best_params=opt_state.best_params,
+            mask=mask,
+            gp_state=opt_state.gp_state,
+        )
         return opt_state
-
 
     def fit(self, opt_state, y, new_params):
         """
@@ -211,28 +238,34 @@ class Optimizer:
         OptimizerState
             The updated state of the optimizer including the new observation.
         """
-        opt_state = self.expand(opt_state) # Prompts recompilation
+        opt_state = self.expand(opt_state)  # Prompts recompilation
         opt_state = self._fit(opt_state, y, new_params)
         return opt_state
-
 
     @partial(jax.jit, static_argnums=(0,))
     def _fit(self, opt_state, y, new_params):
         last_idx = jnp.arange(len(opt_state.mask)) == jnp.argmin(opt_state.mask)
         mask = jnp.asarray(jnp.where(last_idx, True, opt_state.mask))
         ys = jnp.where(last_idx, y, opt_state.ys)
-        params = jax.tree_util.tree_map(lambda x, y: jnp.where(last_idx, y, x), opt_state.params, new_params)
+        params = jax.tree_util.tree_map(
+            lambda x, y: jnp.where(last_idx, y, x), opt_state.params, new_params
+        )
 
-        xs = jnp.stack([self.domain[key].transform(params[key])
-                        for key in params], axis=1)
+        xs = jnp.stack(
+            [self.domain[key].transform(params[key]) for key in params], axis=1
+        )
         gp_state = posterior_fit(ys, xs, mask=mask, state=opt_state.gp_state)
 
         best_score = self.best_fn(ys, where=mask, initial=self.initial)
         best_params_idx = self.best_params_fn(jnp.where(mask, ys, self.initial))
         best_params = jax.tree_util.tree_map(lambda x: x[best_params_idx], params)
 
-        opt_state = OptimizerState(params=params, ys=ys, best_score=best_score,
-                                   best_params=best_params, mask=mask,
-                                   gp_state=gp_state)
+        opt_state = OptimizerState(
+            params=params,
+            ys=ys,
+            best_score=best_score,
+            best_params=best_params,
+            mask=mask,
+            gp_state=gp_state,
+        )
         return opt_state
-

@@ -12,7 +12,7 @@ def expected_improvement(
     mask: jax.Array,
     gp_params: GPParams,
     xi: float = 0.01,
-    ):
+):
     ymax = jnp.max(ys, where=mask, initial=-jnp.inf)
     mu, std = predict(gp_params, xs, ys, mask, xt=x_pred)
     a = mu - ymax - xi
@@ -28,7 +28,7 @@ def probability_improvement(
     mask: jax.Array,
     gp_params: GPParams,
     xi: float = 0.01,
-    ):
+):
     y_max = ys.max()
     mu, std = predict(gp_params, xs, ys, mask, xt=x_pred)
     z = (mu - y_max - xi) / std
@@ -42,7 +42,7 @@ def upper_confidence_bounds(
     mask: jax.Array,
     gp_params: GPParams,
     kappa: float = 0.01,
-    ):
+):
     mu, std = predict(gp_params, xs, ys, mask, xt=x_pred)
     return mu + kappa * std, (mu, std)
 
@@ -54,6 +54,6 @@ def lower_confidence_bounds(
     mask: jax.Array,
     gp_params: GPParams,
     kappa: float = 2.576,
-    ):
+):
     mu, std = predict(gp_params, xs, ys, mask, xt=x_pred)
     return mu - kappa * std, (mu, std)

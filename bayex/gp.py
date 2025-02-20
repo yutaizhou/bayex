@@ -9,6 +9,7 @@ from jax.scipy.linalg import cholesky, solve_triangular
 GPParams = namedtuple("GPParams", ["noise", "amplitude", "lengthscale"])
 GPState = namedtuple("GPState", ["params", "momentums", "scales"])
 
+
 def exp_quadratic(x1, x2, mask):
     distance = jnp.sum((x1 - x2) ** 2)
     return jnp.exp(-distance) * mask
@@ -48,20 +49,20 @@ def gaussian_process(
         logp = 0.5 * jnp.dot(y.T, K_inv_y)
         logp += jnp.sum(jnp.log(jnp.diag(L)))
         logp += (jnp.sum(mask) / 2) * jnp.log(2 * jnp.pi)
-        logp += jnp.sum(-0.5 * jnp.log(2*jnp.pi) - jnp.log(amp) - jnp.log(amp)**2)
+        logp += jnp.sum(-0.5 * jnp.log(2 * jnp.pi) - jnp.log(amp) - jnp.log(amp) ** 2)
         return jnp.sum(logp)
 
     assert xt is not None, "xt can't be None during prediction."
     xt = xt / ls
 
     # Compute the covariance with the new point xt
-    mask_t = jnp.ones(len(xt))==1
+    mask_t = jnp.ones(len(xt)) == 1
     K_cross = amp * cov(x, xt, mask, mask_t)
 
     pred_mean = jnp.dot(K_cross.T, K_inv_y) + ymean
     v = solve_triangular(L, K_cross, lower=True)
     pred_var = amp * cov(xt, xt, mask_t, mask_t) - v.T @ v
-    pred_std = jnp.sqrt(jnp.diag(pred_var)*(jnp.diag(pred_var)>0))
+    pred_std = jnp.sqrt(jnp.diag(pred_var) * (jnp.diag(pred_var) > 0))
     return pred_mean, pred_std
 
 
@@ -78,14 +79,17 @@ def posterior_fit(
     lr: float = 1e-3,
     trainsteps: int = 300,
 ) -> GPState:
-
     @jax.jit
     def train_step(i, state):
         params, momentums, scales = state
         grads = grad_fun(params, x, y, mask)
 
-        momentums = jax.tree_util.tree_map(lambda m, g: 0.9 * m + 0.1 * g, momentums, grads)
-        scales = jax.tree_util.tree_map(lambda s, g: 0.9 * s + 0.1 * g**2, scales, grads)
+        momentums = jax.tree_util.tree_map(
+            lambda m, g: 0.9 * m + 0.1 * g, momentums, grads
+        )
+        scales = jax.tree_util.tree_map(
+            lambda s, g: 0.9 * s + 0.1 * g**2, scales, grads
+        )
         params = jax.tree_util.tree_map(
             lambda p, m, s: p - lr * m / jnp.sqrt(s + 1e-5),
             params,
