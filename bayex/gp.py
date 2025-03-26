@@ -1,14 +1,22 @@
-from collections import namedtuple
 from functools import partial
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 import jax
 import jax.numpy as jnp
 import jax.tree as jt
 from jax.scipy.linalg import cholesky, solve_triangular
 
-GPParams = namedtuple("GPParams", ["noise", "amplitude", "lengthscale"])
-GPState = namedtuple("GPState", ["params", "momentums", "scales"])
+
+class GPParams(NamedTuple):
+    noise: jnp.ndarray
+    amplitude: jnp.ndarray
+    lengthscale: jnp.ndarray
+
+
+class GPState(NamedTuple):
+    params: GPParams
+    momentums: GPParams
+    scales: GPParams
 
 
 def exp_quadratic(x1, x2, mask):

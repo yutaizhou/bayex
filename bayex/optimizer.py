@@ -1,8 +1,9 @@
 from functools import partial
-from typing import NamedTuple, Union
+from typing import Dict, NamedTuple, Union
 
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import jax.tree as jt
 import numpy as np
 
@@ -11,12 +12,15 @@ from bayex.gp import GPParams, GPState, gp_optimize_mll
 
 
 class OptimizerState(NamedTuple):
-    params: dict
+    params_dict: dict
     ys: Union[jax.Array, np.ndarray]
     best_score: float
     best_params: dict
     mask: jax.Array
     gp_state: GPState
+
+
+ParamsDict = Dict[str, jax.Array]
 
 
 class Optimizer:
@@ -62,7 +66,7 @@ class Optimizer:
         else:
             raise ValueError(f"Acquisition function {acq} is not implemented")
 
-    def init(self, ys, params):
+    def init(self, ys, params_dict: ParamsDict) -> OptimizerState:
         """
         Initializes the optimizer state with initial observations and corresponding parameters.
 
@@ -70,7 +74,7 @@ class Optimizer:
         ----------
         ys : Union[jax.Array, np.ndarray]
             The initial set of objective function values corresponding to the initial parameters.
-        params : dict
+        params_dict : dict
             A dictionary of the initial parameters. Each key should match a key in the domain, and the value should be an array of parameter values.
 
         Returns
@@ -85,14 +89,14 @@ class Optimizer:
 
         # Convert to jax arrays if they are not already
         ys = jnp.asarray(ys)
-        params = jt.map(lambda x: jnp.asarray(x), params)
+        params_dict = jt.map(lambda x: jnp.asarray(x), params_dict)
 
         # Define padded arrays for the inputs and the outputs
         mask = jnp.zeros(shape=(pad_value,), dtype=jnp.bool_).at[:num_entries].set(True)
         ys = jnp.zeros(shape=(pad_value,), dtype=ys.dtype).at[:num_entries].set(ys)
 
         _params = {}
-        for key, entries in params.items():
+        for key, entries in params_dict.items():
             assert key in self.domain, f"Parameter {key} is not in the domain"
 
             # Get dtype from the domain and create a padded array
@@ -123,7 +127,7 @@ class Optimizer:
         gp_state = gp_optimize_mll(xs, ys, mask=mask, state=gp_state)
 
         opt_state = OptimizerState(
-            params=_params,
+            params_dict=_params,
             ys=ys,
             best_score=best_score,
             best_params=best_params,
@@ -133,7 +137,7 @@ class Optimizer:
 
         return opt_state
 
-    def sample(self, key, opt_state, size=1000, has_prior=False):
+    def sample(self, key, opt_state, size=1000, has_prior=False) -> ParamsDict:
         """
         Samples new parameters based on the acquisition function and current state of the optimizer.
 
@@ -156,67 +160,39 @@ class Optimizer:
             A tuple of arrays (means, stds) representing the prior mean and standard deviation of
             the sampled parameters. Only returned if has_prior is True.
         """
-        # Sample 'size' elements of each distribution.
-        keys = jax.random.split(key, len(opt_state.params))
-        samples = {
-            param: self.domain[param].sample(key, (size,))
-            for key, param in zip(keys, opt_state.params)
-        }
+        p_names = opt_state.params_dict.keys()
+        keys = jr.split(key, len(p_names))
 
+        # x_star for GP conditioning: sample over entire domain, eval acq at each point
+        samples_dict = {
+            p_name: self.domain[p_name].sample(key, (size,))
+            for p_name, key in zip(p_names, keys)
+        }  # {"x": (1000,)}
+
+        xs_star = jnp.stack(list(samples_dict.values()), axis=1)  # (1000,1)
+
+        # current obs that defines GP function prior
+        ys = opt_state.ys
         xs = jnp.stack(
             [
-                self.domain[key].transform(opt_state.params[key])
-                for key in opt_state.params
+                self.domain[p_name].transform(params)
+                for p_name, params in opt_state.params_dict.items()
             ],
             axis=1,
-        )
-        ys = opt_state.ys
+        )  #  (10,1)
+
         mask = opt_state.mask
         gpparams = opt_state.gp_state.params
-        keys = jax.random.split(key, len(opt_state.params))
-        xs_samples = jnp.stack(
-            [
-                self.domain[name].sample(key, (size,))
-                for key, name in zip(keys, opt_state.params)
-            ],
-            axis=1,
-        )
 
         # Use the acquisition function to find the best parameters
-        zs, (means, stds) = self.acq(xs_samples, xs, ys, mask, gpparams)
+        zs, (means, stds) = self.acq(xs_star, xs, ys, mask, gpparams)
         idx = jnp.argmax(zs)
-        best_params = jt.map(lambda d: d[idx], samples)
+        best_params = jt.map(lambda d: d[idx], samples_dict)
         if has_prior:
-            return best_params, (xs_samples, means, stds)
+            return best_params, (xs_star, means, stds)
         return best_params
 
-    def expand(self, opt_state):
-        current = jnp.sum(opt_state.mask)
-
-        if current == len(opt_state.mask):
-            pad_value = int(np.ceil(len(opt_state.mask) * 2 / 10) * 10)
-            diff = pad_value - len(opt_state.mask)
-            mask = jnp.pad(opt_state.mask, (0, diff))
-            ys = jnp.pad(opt_state.ys, (0, diff))
-            params = {}
-            for key in opt_state.params:
-                params[key] = jnp.pad(opt_state.params[key], (0, diff))
-        else:
-            mask = opt_state.mask
-            ys = opt_state.ys
-            params = opt_state.params
-
-        opt_state = OptimizerState(
-            params=params,
-            ys=ys,
-            best_score=opt_state.best_score,
-            best_params=opt_state.best_params,
-            mask=mask,
-            gp_state=opt_state.gp_state,
-        )
-        return opt_state
-
-    def fit(self, opt_state, y, new_params):
+    def fit(self, opt_state, y_new: float, new_params: ParamsDict) -> OptimizerState:
         """
         Updates the optimizer state with a new observation.
 
@@ -234,33 +210,69 @@ class Optimizer:
         OptimizerState
             The updated state of the optimizer including the new observation.
         """
-        opt_state = self.expand(opt_state)  # Prompts recompilation
-        opt_state = self._fit(opt_state, y, new_params)
+        opt_state = self._expand_buffer(opt_state)  # Prompts recompilation
+        opt_state = self._fit(opt_state, y_new, new_params)
+        return opt_state
+
+    def _expand_buffer(self, opt_state) -> OptimizerState:
+        """
+        If the buffer is full, double the buffer size. Otherwise, do nothing
+        """
+        n_points = jnp.sum(opt_state.mask)
+
+        if n_points == len(opt_state.mask):
+            pad_value = int(np.ceil(len(opt_state.mask) * 2 / 10) * 10)
+            diff = pad_value - len(opt_state.mask)
+            mask = jnp.pad(opt_state.mask, (0, diff))
+            ys = jnp.pad(opt_state.ys, (0, diff))
+            params_dict = {}
+            for key in opt_state.params_dict:
+                params_dict[key] = jnp.pad(opt_state.params_dict[key], (0, diff))
+            print(f"Expanding buffer: {n_points} -> {pad_value}")
+        else:
+            mask = opt_state.mask
+            ys = opt_state.ys
+            params_dict = opt_state.params_dict
+
+        opt_state = opt_state._replace(
+            mask=mask,
+            ys=ys,
+            params_dict=params_dict,
+        )
+
         return opt_state
 
     @partial(jax.jit, static_argnums=(0,))
-    def _fit(self, opt_state, y, new_params):
-        last_idx = jnp.arange(len(opt_state.mask)) == jnp.argmin(opt_state.mask)
-        mask = jnp.asarray(jnp.where(last_idx, True, opt_state.mask))
-        ys = jnp.where(last_idx, y, opt_state.ys)
-        params = jt.map(
-            lambda x, y: jnp.where(last_idx, y, x), opt_state.params, new_params
+    def _fit(self, opt_state, y_new: float, new_params: ParamsDict) -> OptimizerState:
+        """
+        1. To include new obs: update the buffer's pointer, mask, and dataset
+        2. Fit the GP to the new dataset
+        3. Update the best score and parameters
+        """
+        last_mask = jnp.arange(len(opt_state.mask)) == jnp.argmin(opt_state.mask)
+        mask = jnp.asarray(jnp.where(last_mask, True, opt_state.mask))
+        ys = jnp.where(last_mask, y_new, opt_state.ys)
+        params_dict = jt.map(
+            lambda p_old, p_new: jnp.where(last_mask, p_new, p_old),
+            opt_state.params_dict,
+            new_params,
         )
 
         xs = jnp.stack(
-            [self.domain[key].transform(params[key]) for key in params], axis=1
+            [self.domain[k].transform(v) for k, v in params_dict.items()],
+            axis=1,
         )
         gp_state = gp_optimize_mll(xs, ys, mask=mask, state=opt_state.gp_state)
 
         best_score = self.best_fn(ys, where=mask, initial=self.initial)
         best_params_idx = self.best_params_fn(jnp.where(mask, ys, self.initial))
-        best_params = jt.map(lambda x: x[best_params_idx], params)
+        best_params_dict = jt.map(lambda x: x[best_params_idx], params_dict)
 
         opt_state = OptimizerState(
-            params=params,
+            params_dict=params_dict,
             ys=ys,
             best_score=best_score,
-            best_params=best_params,
+            best_params=best_params_dict,
             mask=mask,
             gp_state=gp_state,
         )

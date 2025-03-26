@@ -30,11 +30,11 @@ def test_1D_optim():
     assert type(opt_state) == bayex.OptimizerState
     assert type(opt_state.gp_state) == bayex.gp.GPState  # pyright: ignore
 
-    assert opt_state.params["x"].shape == (10,)
+    assert opt_state.params_dict["x"].shape == (10,)
     assert opt_state.ys.shape == (10,)
     assert opt_state.mask.shape == (10,)
 
-    assert np.allclose(opt_state.params["x"][:3], params["x"])
+    assert np.allclose(opt_state.params_dict["x"][:3], params["x"])
     assert np.allclose(opt_state.ys[:3], ys)
     assert np.allclose(opt_state.mask[:3], [True, True, True])
     assert np.allclose(opt_state.mask[3:], [False] * 7)
