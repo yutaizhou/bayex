@@ -1,4 +1,6 @@
 import jax
+import jax.numpy as jnp
+import jax.random as jr
 
 
 class Domain:
@@ -30,7 +32,7 @@ class Real(Domain):
 
         self.lower = float(lower)
         self.upper = float(upper)
-        super().__init__(dtype=jax.numpy.float32)
+        super().__init__(dtype=jnp.float32)
 
     def __hash__(self):
         return hash((self.lower, self.upper))
@@ -39,10 +41,10 @@ class Real(Domain):
         return self.lower == other.lower and self.upper == other.upper
 
     def transform(self, x):
-        return jax.numpy.clip(x, self.lower, self.upper)
+        return jnp.clip(x, self.lower, self.upper)
 
     def sample(self, key, shape):
-        samples = jax.random.uniform(key, shape, minval=self.lower, maxval=self.upper)
+        samples = jr.uniform(key, shape, minval=self.lower, maxval=self.upper)
         return self.transform(samples)
 
 
@@ -54,7 +56,7 @@ class Integer(Domain):
 
         self.lower = int(lower)
         self.upper = int(upper)
-        super().__init__(dtype=jax.numpy.int32)
+        super().__init__(dtype=jnp.int32)
 
     def __hash__(self):
         return hash((self.lower, self.upper))
@@ -63,12 +65,8 @@ class Integer(Domain):
         return self.lower == other.lower and self.upper == other.upper
 
     def transform(self, x):
-        return jax.numpy.clip(jax.numpy.round(x), self.lower, self.upper).astype(
-            jax.numpy.float32
-        )
+        return jnp.clip(jnp.round(x), self.lower, self.upper).astype(jnp.float32)
 
     def sample(self, key, shape):
-        samples = jax.random.randint(
-            key, shape, minval=self.lower, maxval=self.upper + 1
-        )
+        samples = jr.randint(key, shape, minval=self.lower, maxval=self.upper + 1)
         return self.transform(samples)

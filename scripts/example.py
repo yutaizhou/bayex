@@ -16,12 +16,11 @@ optimizer = bayex.Optimizer(domain=domain, maximize=True, acq="PI")
 # Define some prior evaluations to initialise the GP.
 params = {"x": [0.0, 0.5, 1.0]}
 ys = [f(x) for x in params["x"]]
-opt_state = optimizer.init(ys, params)
+opt_state = optimizer.init(ys, params)  # MLL fit to the initial points
 
-# Sample new points using Jax PRNG approach.
-ori_key = jax.random.key(42)
+ori_key = jr.key(42)
 for step in range(20):
-    key = jax.random.fold_in(ori_key, step)
+    key = jr.fold_in(ori_key, step)
     new_params = optimizer.sample(key, opt_state)
     y_new = f(**new_params)
     opt_state = optimizer.fit(opt_state, y_new, new_params)

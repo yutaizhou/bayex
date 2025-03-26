@@ -4,6 +4,7 @@ from typing import Any, Optional
 
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 from jax.scipy.linalg import cholesky, solve_triangular
 
 GPParams = namedtuple("GPParams", ["noise", "amplitude", "lengthscale"])
@@ -26,7 +27,7 @@ def softplus(x):
 
 
 def gaussian_process(
-    params,
+    params: GPParams,
     x: jnp.ndarray,
     y: jnp.ndarray,
     mask,
@@ -36,7 +37,7 @@ def gaussian_process(
     # Number of points in the prior distribution
     n = x.shape[0]
 
-    noise, amp, ls = jax.tree_util.tree_map(softplus, params)
+    noise, amp, ls = jt.map(softplus, params)
 
     ymean = jnp.mean(y, where=mask)
     y = (y - ymean) * mask
@@ -66,38 +67,33 @@ def gaussian_process(
     return pred_mean, pred_std
 
 
-marginal_likelihood = partial(gaussian_process, compute_ml=True)
-grad_fun = jax.jit(jax.grad(marginal_likelihood))
-predict = jax.jit(partial(gaussian_process, compute_ml=False))
+gp_mll = partial(gaussian_process, compute_ml=True)
+gp_mll_grad = jax.jit(jax.grad(gp_mll))
+gp_predict = jax.jit(partial(gaussian_process, compute_ml=False))
 
 
-def posterior_fit(
-    y: jax.Array,
+def gp_optimize_mll(
     x: jax.Array,
+    y: jax.Array,
     mask: jax.Array,
     state: GPState,
     lr: float = 1e-3,
     trainsteps: int = 300,
 ) -> GPState:
     @jax.jit
-    def train_step(i, state):
+    def train_step(i, state: GPState):
         params, momentums, scales = state
-        grads = grad_fun(params, x, y, mask)
+        grads = gp_mll_grad(params, x, y, mask)
 
-        momentums = jax.tree_util.tree_map(
-            lambda m, g: 0.9 * m + 0.1 * g, momentums, grads
-        )
-        scales = jax.tree_util.tree_map(
-            lambda s, g: 0.9 * s + 0.1 * g**2, scales, grads
-        )
-        params = jax.tree_util.tree_map(
+        momentums = jt.map(lambda m, g: 0.9 * m + 0.1 * g, momentums, grads)
+        scales = jt.map(lambda s, g: 0.9 * s + 0.1 * g**2, scales, grads)
+        params = jt.map(
             lambda p, m, s: p - lr * m / jnp.sqrt(s + 1e-5),
             params,
             momentums,
             scales,
         )
-        new_state = GPState(params, momentums, scales)
-        return new_state
+        return GPState(params, momentums, scales)
 
     state = jax.lax.fori_loop(0, trainsteps, train_step, state)
     return state

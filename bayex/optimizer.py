@@ -3,10 +3,11 @@ from typing import NamedTuple, Union
 
 import jax
 import jax.numpy as jnp
+import jax.tree as jt
 import numpy as np
 
 import bayex.acq as boacq
-from bayex.gp import GPParams, GPState, posterior_fit
+from bayex.gp import GPParams, GPState, gp_optimize_mll
 
 
 class OptimizerState(NamedTuple):
@@ -84,7 +85,7 @@ class Optimizer:
 
         # Convert to jax arrays if they are not already
         ys = jnp.asarray(ys)
-        params = jax.tree_util.tree_map(lambda x: jnp.asarray(x), params)
+        params = jt.map(lambda x: jnp.asarray(x), params)
 
         # Define padded arrays for the inputs and the outputs
         mask = jnp.zeros(shape=(pad_value,), dtype=jnp.bool_).at[:num_entries].set(True)
@@ -92,39 +93,34 @@ class Optimizer:
 
         _params = {}
         for key, entries in params.items():
-            # Assert that the parameter is in the domain dictionary
             assert key in self.domain, f"Parameter {key} is not in the domain"
 
-            # Get dytpe from the domain and create a padded array
-            dtype = self.domain[key].dtype
-            values = (
-                jnp.zeros(shape=(pad_value,), dtype=dtype).at[:num_entries].set(entries)
-            )
+            # Get dtype from the domain and create a padded array
+            values = jnp.zeros(shape=(pad_value,), dtype=self.domain[key].dtype)
+            values = values.at[:num_entries].set(entries)
             _params[key] = values
 
-        # From the given observation, find the better one (either maxima or minima) and return the
-        # initial optizer state.
+        # From the given obs, find the best and return the initial optimizer state.
         best_score = float(self.best_fn(ys[mask]))
         best_params_idx = self.best_params_fn(ys[mask])
-        best_params = jax.tree_util.tree_map(
-            lambda x: x[mask][best_params_idx], _params
-        )
+        best_params = jt.map(lambda p: p[mask][best_params_idx], _params)
 
-        # Initialize the gaussian processes state
+        # Initialize the GP state: kernel params and sgd state
         gpparams = GPParams(
             noise=jnp.full((1, 1), -5.0),
             amplitude=jnp.zeros((1, 1)),
             lengthscale=jnp.zeros((1, len(_params))),
         )
-        momentums = jax.tree_util.tree_map(jnp.zeros_like, gpparams)
-        scales = jax.tree_util.tree_map(jnp.ones_like, gpparams)
+        momentums = jt.map(jnp.zeros_like, gpparams)
+        scales = jt.map(jnp.ones_like, gpparams)
         gp_state = GPState(gpparams, momentums, scales)
 
         # Fit to the current observations
         xs = jnp.stack(
-            [self.domain[key].transform(_params[key]) for key in _params], axis=1
+            [self.domain[key].transform(_params[key]) for key in _params],
+            axis=1,
         )
-        gp_state = posterior_fit(ys, xs, mask=mask, state=gp_state)
+        gp_state = gp_optimize_mll(xs, ys, mask=mask, state=gp_state)
 
         opt_state = OptimizerState(
             params=_params,
@@ -189,7 +185,7 @@ class Optimizer:
         # Use the acquisition function to find the best parameters
         zs, (means, stds) = self.acq(xs_samples, xs, ys, mask, gpparams)
         idx = jnp.argmax(zs)
-        best_params = jax.tree_util.tree_map(lambda d: d[idx], samples)
+        best_params = jt.map(lambda d: d[idx], samples)
         if has_prior:
             return best_params, (xs_samples, means, stds)
         return best_params
@@ -247,18 +243,18 @@ class Optimizer:
         last_idx = jnp.arange(len(opt_state.mask)) == jnp.argmin(opt_state.mask)
         mask = jnp.asarray(jnp.where(last_idx, True, opt_state.mask))
         ys = jnp.where(last_idx, y, opt_state.ys)
-        params = jax.tree_util.tree_map(
+        params = jt.map(
             lambda x, y: jnp.where(last_idx, y, x), opt_state.params, new_params
         )
 
         xs = jnp.stack(
             [self.domain[key].transform(params[key]) for key in params], axis=1
         )
-        gp_state = posterior_fit(ys, xs, mask=mask, state=opt_state.gp_state)
+        gp_state = gp_optimize_mll(xs, ys, mask=mask, state=opt_state.gp_state)
 
         best_score = self.best_fn(ys, where=mask, initial=self.initial)
         best_params_idx = self.best_params_fn(jnp.where(mask, ys, self.initial))
-        best_params = jax.tree_util.tree_map(lambda x: x[best_params_idx], params)
+        best_params = jt.map(lambda x: x[best_params_idx], params)
 
         opt_state = OptimizerState(
             params=params,
